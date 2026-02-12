@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual env
+venv/
+
+# Database
+*.db
+
+# VS Code
+.vscode/
+
+# Build
+.dist/
