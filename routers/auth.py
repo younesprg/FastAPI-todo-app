@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, status, HTTPException
 from pydantic import BaseModel
 from models import Users
@@ -5,15 +6,25 @@ from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from database import SessionLocal
 from typing import Annotated
-from jose import jwt
+from jose import JWTError, jwt
 
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordRequestForm,OAuth2PasswordBearer
 
-router = APIRouter()
+router = APIRouter(
+    prefix= '/auth',
+    tags = ['auth']
+)
 
+SECRET_KEY ='76bdfd46520f4e918956551289b41a3440edffe6249086b2048776be01e4a394'
+ALGORITHM ='HS256'
 
 
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+oauth2_bearer = OAuth2PasswordBearer(tokenUrl = 'auth/token')
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
 
 def get_db():
@@ -26,16 +37,6 @@ def get_db():
 
 db_dependency = Annotated[Session, Depends(get_db)]   ##dependency enjection
 
-def authenticate_user(username: str, password:str, db):
-    user = db.query(Users).filter(Users.name == username).first()
-    if not user:
-        return False
-    if not bcrypt_context.verify(password, user.hash_password):  ##kullanıcının girdiği şifre ile veritabanındaki
-                                                                     ## hashelenmiş şifreyle (user.hash_password) ile eşleşiyor mu  diye kontrol eder
-        return False
-    return True
-
-
 class CreateUserRequest(BaseModel):
     username: str
     email: str
@@ -45,8 +46,43 @@ class CreateUserRequest(BaseModel):
     role: str
 
 
+def authenticate_user(username: str, password:str, db):
+    user = db.query(Users).filter(Users.username == username).first()
+    if not user:
+        return False
+    if not bcrypt_context.verify(password, user.hashed_password):  ##kullanıcının girdiği şifre ile veritabanındaki
+                                                                     ## hashelenmiş şifreyle (user.hash_password) ile eşleşiyor mu  diye kontrol eder
+        return False
+    return user
 
-@router.post("/auth", status_code=status.HTTP_201_CREATED)
+
+## Encode JWT
+def create_access_token(username: str,user_id: int, expires_delta: timedelta):
+    
+    encode = {'sub': username, 'id': user_id}
+    expires= datetime.now(timezone.utc) + expires_delta
+    encode.update({'exp': expires})
+    return jwt.encode(encode,SECRET_KEY, algorithm= ALGORITHM)
+
+
+## Decode JWT
+async def get_currenct_user(token: Annotated[str, Depends(oauth2_bearer)]):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username : str = payload.get('sub')
+        user_id : int = payload.get('id')
+        if username is None or user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail= 'Could not validate user.')
+        return{ 'username': username, 'id': user_id}
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail= 'Could not validate user.')
+    
+    
+
+#Register akışı(Kullanıcı oluşturma)
+@router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_user(db: db_dependency, create_user_request: CreateUserRequest):
     create_user_model = Users(
         email=create_user_request.email,
@@ -62,12 +98,17 @@ async def create_user(db: db_dependency, create_user_request: CreateUserRequest)
     db.commit()
         
     
-@router.post("/token")
-async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db:db_dependency):
+#Login akışı(authentication)
+@router.post("/token", response_model= Token)
+async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+                                 db:db_dependency):
     user = authenticate_user(form_data.username, form_data.password, db)
     if not user:
-        return 'Failed Authentication'
-    return 'Succesful Authentication'
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail= 'Could not validate user.')
+    token = create_access_token(user.username, user.id, timedelta( minutes=20))
+    
+    return {'access_token': token, 'token_type': 'bearer'}
 
 
 
